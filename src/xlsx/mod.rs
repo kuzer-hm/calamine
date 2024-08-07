@@ -10,17 +10,14 @@ use log::warn;
 use quick_xml::events::attributes::{Attribute, Attributes};
 use quick_xml::events::Event;
 use quick_xml::name::QName;
-use quick_xml::Reader as XmlReader;
+use quick_xml::{Error, Reader as XmlReader};
 use zip::read::{ZipArchive, ZipFile};
 use zip::result::ZipError;
 
 use crate::datatype::DataRef;
 use crate::formats::{builtin_format_by_id, detect_custom_number_format, CellFormat};
 use crate::vba::VbaProject;
-use crate::{
-    Cell, CellErrorType, Data, Dimensions, Metadata, Range, Reader, ReaderRef, Sheet, SheetType,
-    SheetVisible, Table,
-};
+use crate::{Cell, CellErrorType, Data, Dimensions, Metadata, PictureCell, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible, Table};
 pub use cells_reader::XlsxCellReader;
 
 pub(crate) type XlReader<'a> = XmlReader<BufReader<ZipFile<'a>>>;
@@ -175,6 +172,14 @@ impl FromStr for CellErrorType {
 }
 
 type Tables = Option<Vec<(String, String, Vec<String>, Dimensions)>>;
+
+#[derive(PartialEq)]
+enum PictureTag {
+    XdrFrom,
+    XdrTo,
+    XdrPic,
+    UnTag,
+}
 
 /// A struct representing xml zipped excel file
 /// Xlsx, Xlsm, Xlam
@@ -644,6 +649,88 @@ impl<RS: Read + Seek> Xlsx<RS> {
         }
         Ok(())
     }
+
+    fn read_pictures_sheet(&mut self) -> Result<(), XlsxError> {
+
+        let mut drawings = vec![];
+
+        let mut buf = Vec::with_capacity(1024);
+
+
+
+        for i in 0..self.sheets.len() {
+            let mut drawings = vec![];
+
+            let mut xml = match  xml_reader(&mut self.zip, format!("xl/drawings/drawing{}.xml", i).as_str()) {
+                None => {
+                    return Err(XlsxError::FileNotFound("xl/drawings/drawing1.xml".to_string()))
+                },
+                Some(x)=>x?
+            };
+
+            let parse_dimension = | xml:&mut XlReader,  buf:&mut Vec<u8>| ->  Result<(u32,u32,u32,u32), XlsxError> {
+                let mut dimension = (0,0,0,0);
+                loop {
+                    buf.clear();
+                    match xml.read_event_into(buf) {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:col" => {
+                        },
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:colOff" => {
+                        },
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:row" => {
+                        },
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:rowOff" => {
+                        },
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"xdr:from" => {
+                            break;
+                        }
+                        Ok(Event::End(ref e)) => {
+                            return Err(XlsxError::UnexpectedNode(format!("unexpected node {}", e).as_str()));
+                        }
+                        _=>{}
+                    }
+
+                }
+                Ok(dimension)
+            };
+
+            let mut parent_tag = PictureTag::UnTag;
+
+            loop {
+                buf.clear();
+                match xml.read_event_into(&mut buf) {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:twoCellAcn" => {
+                        drawings.push(PictureCell::default())
+                    },
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:from" => {
+                    },
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:to" => {
+                        parent_tag = PictureTag::XdrTo;
+                    },
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:col" => {
+                        match parent_tag {
+                            PictureTag::XdrFrom => {
+                                drawings[drawings.len() - 1].from = parse_dimension(&mut xml, &mut buf)?;
+                            },
+                            PictureTag::XdrTo => {
+                                drawings[drawings.len() - 1].to = parse_dimension(&mut xml, &mut buf)?;
+                            },
+                            _=>{}
+                        }
+                    },
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:row" => {
+                    }
+                    _ => {
+
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+
 
     // sheets must be added before this is called!!
     fn read_merged_regions(&mut self) -> Result<(), XlsxError> {

@@ -306,6 +306,23 @@ where
     }
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct PictureCell {
+    /// from (col, colOff, row, rowOff)
+    pub from: (u32, u32, u32, u32),
+    /// to (col, colOff, row, rowOff)
+    pub to: (u32, u32, u32, u32),
+    pub picture: PicPr
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct PicPr {
+    id: String,
+    name: String,
+    // rot (rot, off_x , off_y, ext_cx, ext_cy)
+    rot: (u32, u32,u32, u32,u32)
+}
+
 /// Convenient function to open a file with a BufReader<File>
 pub fn open_workbook<R, P>(path: P) -> Result<R, R::Error>
 where

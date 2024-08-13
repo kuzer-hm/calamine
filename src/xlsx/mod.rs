@@ -651,8 +651,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
         for i in 1..=self.sheets.len() {
 
-            let mut drawings = vec![];
-
             let mut xml = match  xml_reader(&mut self.zip, format!("xl/drawings/drawing{}.xml", i).as_str()) {
                 None => {
                     break;
@@ -665,17 +663,53 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 loop {
                     buf.clear();
                     match xml.read_event_into(buf) {
-                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:col" => {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"col" => {
+                            buf.clear();
+                            match xml.read_event_into(buf) {
+                                Ok(Event::Text(ref e)) => {
+                                    dimension.0 = u32::from_str(e.unescape().unwrap().to_string().as_str()).unwrap();
+                                }
+                                _=>{
+                                }
+                            }
                         },
-                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:colOff" => {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"colOff" => {
+                            buf.clear();
+                            match xml.read_event_into(buf) {
+                                Ok(Event::Text(ref e)) => {
+                                    dimension.1 = u32::from_str(e.unescape().unwrap().to_string().as_str()).unwrap();
+                                }
+                                _=>{
+
+                                }
+                            }
                         },
-                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:row" => {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"row" => {
+                            buf.clear();
+                            match xml.read_event_into(buf) {
+                                Ok(Event::Text(ref e)) => {
+                                    dimension.2 = u32::from_str(e.unescape().unwrap().to_string().as_str()).unwrap();
+                                }
+                                _=>{
+
+                                }
+                            }
                         },
-                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:rowOff" => {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"rowOff" => {
+                            buf.clear();
+                            match xml.read_event_into(buf) {
+                                Ok(Event::Text(ref e)) => {
+                                    dimension.3 = u32::from_str(e.unescape().unwrap().to_string().as_str()).unwrap();
+                                }
+                                _=>{
+
+                                }
+                            }
                         },
-                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"xdr:from" || e.local_name().as_ref() == b"xdr:to" => {
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"from" || e.local_name().as_ref() == b"to" => {
                             break;
                         }
+
                         _=>{}
                     }
 
@@ -686,20 +720,21 @@ impl<RS: Read + Seek> Xlsx<RS> {
             loop {
                 buf.clear();
                 match xml.read_event_into(&mut buf) {
-                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:twoCellAcn" => {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"twoCellAnchor" => {
+                        println!("come in");
                         drawings.push(PictureCell::default())
                     },
-                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:from" => {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"from" => {
                         drawings.last_mut().unwrap().from = parse_dimension(&mut xml, &mut buf)?;
                     },
-                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:to" => {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"to" => {
                         drawings.last_mut().unwrap().to = parse_dimension(&mut xml, &mut buf)?;
                     },
-                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:pic" => {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"pic" => {
 
                     },
                     Ok(Event::Start(ref e)) => {
-                        println!("{}" , String::from_utf8(e.to_vec()).unwrap())
+                        // println!("{:?}" , String::from_utf8(e.local_name().as_ref().to_vec()));
                     }
                     Ok(Event::Eof) => {
                         break;

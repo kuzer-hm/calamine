@@ -173,13 +173,6 @@ impl FromStr for CellErrorType {
 
 type Tables = Option<Vec<(String, String, Vec<String>, Dimensions)>>;
 
-#[derive(PartialEq)]
-enum PictureTag {
-    XdrFrom,
-    XdrTo,
-    XdrPic,
-    UnTag,
-}
 
 /// A struct representing xml zipped excel file
 /// Xlsx, Xlsm, Xlam
@@ -652,18 +645,17 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
     fn read_pictures_sheet(&mut self) -> Result<(), XlsxError> {
 
-        let mut drawings = vec![];
+        let mut drawings: Vec<PictureCell> = vec![];
 
         let mut buf = Vec::with_capacity(1024);
 
+        for i in 1..=self.sheets.len() {
 
-
-        for i in 0..self.sheets.len() {
             let mut drawings = vec![];
 
             let mut xml = match  xml_reader(&mut self.zip, format!("xl/drawings/drawing{}.xml", i).as_str()) {
                 None => {
-                    return Err(XlsxError::FileNotFound("xl/drawings/drawing1.xml".to_string()))
+                    break;
                 },
                 Some(x)=>x?
             };
@@ -681,11 +673,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         },
                         Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:rowOff" => {
                         },
-                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"xdr:from" => {
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"xdr:from" || e.local_name().as_ref() == b"xdr:to" => {
                             break;
-                        }
-                        Ok(Event::End(ref e)) => {
-                            return Err(XlsxError::UnexpectedNode(format!("unexpected node {}", e).as_str()));
                         }
                         _=>{}
                     }
@@ -694,8 +683,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 Ok(dimension)
             };
 
-            let mut parent_tag = PictureTag::UnTag;
-
             loop {
                 buf.clear();
                 match xml.read_event_into(&mut buf) {
@@ -703,29 +690,27 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         drawings.push(PictureCell::default())
                     },
                     Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:from" => {
+                        drawings.last_mut().unwrap().from = parse_dimension(&mut xml, &mut buf)?;
                     },
                     Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:to" => {
-                        parent_tag = PictureTag::XdrTo;
+                        drawings.last_mut().unwrap().to = parse_dimension(&mut xml, &mut buf)?;
                     },
-                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:col" => {
-                        match parent_tag {
-                            PictureTag::XdrFrom => {
-                                drawings[drawings.len() - 1].from = parse_dimension(&mut xml, &mut buf)?;
-                            },
-                            PictureTag::XdrTo => {
-                                drawings[drawings.len() - 1].to = parse_dimension(&mut xml, &mut buf)?;
-                            },
-                            _=>{}
-                        }
-                    },
-                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:row" => {
-                    }
-                    _ => {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"xdr:pic" => {
 
+                    },
+                    Ok(Event::Start(ref e)) => {
+                        println!("{}" , String::from_utf8(e.to_vec()).unwrap())
+                    }
+                    Ok(Event::Eof) => {
+                        break;
+                    },
+                    _ => {
                     }
                 }
             }
         }
+
+        println!("drawings: {:?}", drawings);
 
         Ok(())
     }
@@ -961,6 +946,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
         xlsx.read_workbook(&relationships)?;
         #[cfg(feature = "picture")]
         xlsx.read_pictures()?;
+        #[cfg(feature = "picture")]
+        xlsx.read_pictures_sheet()?;
 
         Ok(xlsx)
     }

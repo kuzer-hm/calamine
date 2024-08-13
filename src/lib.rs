@@ -306,15 +306,18 @@ where
     }
 }
 
+/// picture cell
 #[derive(Default, Debug, Clone)]
 pub struct PictureCell {
     /// from (col, colOff, row, rowOff)
     pub from: (u32, u32, u32, u32),
     /// to (col, colOff, row, rowOff)
     pub to: (u32, u32, u32, u32),
+    /// actual picture
     pub picture: PicPr
 }
 
+/// actual picture
 #[derive(Default, Debug, Clone)]
 pub struct PicPr {
     id: String,

@@ -1,7 +1,7 @@
 mod cells_reader;
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::BufReader;
 use std::io::{Read, Seek};
 use std::str::FromStr;
@@ -645,7 +645,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
     }
     // 图片非常之大的，应该尽量在使用到的时候再加载，而不是一次性加载到内存
 
-    fn read_picture_relations(&mut self) -> Result<(), XlsxError> {
+    fn read_picture_relations(&mut self) -> Result<Vec<HashMap<String, PicPr>>, XlsxError> {
 
         let mut picture_caches = vec![];
 
@@ -656,7 +656,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 Some(x) => x?
             };
 
-            let mut picture_cache = vec![];
+            let mut picture_cache = HashMap::<String, PicPr>::new();
 
             let mut buf = Vec::with_capacity(1024);
 
@@ -675,10 +675,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                     }
                                     _=>{}
                                 }
-
                             }
                         }
-                        picture_cache.push(pp);
+
+                        if pp.is_valid() {
+                            picture_cache.insert(pp.id, pp.clone());
+                        }
                     }
                     Ok(Event::End(e)) if e.local_name().as_ref()== b"Relationship" => {
                         picture_caches.push(picture_cache);
@@ -695,12 +697,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
         }
 
-        Ok(())
+        Ok(picture_caches)
     }
 
     fn read_pictures_sheet(&mut self) -> Result<(), XlsxError> {
 
         let mut drawings: Vec<PictureCell> = vec![];
+        let picture_relations = self.read_picture_relations()?;
 
         let mut buf = Vec::with_capacity(1024);
 
@@ -818,6 +821,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         }
                                     })
                                 },
+                                // read picture shape
                                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"xfrm" => {
                                     e.attributes().into_iter().try_for_each::<_, Result<(), XlsxError>>(|p|{
                                         if let Ok(att) = p {
@@ -850,7 +854,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
             }
         }
 
-        println!("drawings: {:#?}", drawings);
+
+        for i in 0..drawings.len() {
+            if let Some(relation) = picture_relations.get(i) {
+            }
+        }
+
 
         Ok(())
     }

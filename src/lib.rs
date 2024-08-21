@@ -327,6 +327,12 @@ pub struct PicPr {
     target: String,
 }
 
+impl PicPr {
+    fn is_valid(&self) -> bool {
+        !self.id.is_empty() && !self.target.is_empty()
+    }
+}
+
 /// Convenient function to open a file with a BufReader<File>
 pub fn open_workbook<R, P>(path: P) -> Result<R, R::Error>
 where

@@ -323,7 +323,8 @@ pub struct PicPr {
     id: String,
     name: String,
     // rot (rot, off_x , off_y, ext_cx, ext_cy)
-    rot: (u32, u32,u32, u32,u32)
+    rot: (u32, u32,u32, u32,u32),
+    target: String,
 }
 
 /// Convenient function to open a file with a BufReader<File>

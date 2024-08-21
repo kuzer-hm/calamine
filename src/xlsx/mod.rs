@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::io::{Read, Seek};
 use std::str::FromStr;
+use std::string::ParseError;
 
 use log::warn;
 use quick_xml::events::attributes::{Attribute, Attributes};
@@ -17,7 +18,7 @@ use zip::result::ZipError;
 use crate::datatype::DataRef;
 use crate::formats::{builtin_format_by_id, detect_custom_number_format, CellFormat};
 use crate::vba::VbaProject;
-use crate::{Cell, CellErrorType, Data, Dimensions, Metadata, PictureCell, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible, Table};
+use crate::{Cell, CellErrorType, Data, Dimensions, Metadata, PicPr, PictureCell, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible, Table};
 pub use cells_reader::XlsxCellReader;
 
 pub(crate) type XlReader<'a> = XmlReader<BufReader<ZipFile<'a>>>;
@@ -642,6 +643,60 @@ impl<RS: Read + Seek> Xlsx<RS> {
         }
         Ok(())
     }
+    // 图片非常之大的，应该尽量在使用到的时候再加载，而不是一次性加载到内存
+
+    fn read_picture_relations(&mut self) -> Result<(), XlsxError> {
+
+        let mut picture_caches = vec![];
+
+        // read file to store take the picture id and path to storage
+        for i in 1..=self.sheets.len() {
+            let mut xml = match xml_reader(&mut self.zip, format!("xl/drawings/_rels/drawing{}.xml", i).as_str()) {
+                None => break,
+                Some(x) => x?
+            };
+
+            let mut picture_cache = vec![];
+
+            let mut buf = Vec::with_capacity(1024);
+
+            loop {
+                match xml.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"Relationship" => {
+                        let mut pp = PicPr::default();
+                        for att in e.attributes().into_iter() {
+                            if let Ok(att) = att {
+                                match att.key {
+                                    QName(b"Id") => {
+                                        pp.id = String::from_utf8(att.value.to_vec()).unwrap();
+                                    },
+                                    QName(b"Target") => {
+                                        pp.target = String::from_utf8(att.value.to_vec()).unwrap();
+                                    }
+                                    _=>{}
+                                }
+
+                            }
+                        }
+                        picture_cache.push(pp);
+                    }
+                    Ok(Event::End(e)) if e.local_name().as_ref()== b"Relationship" => {
+                        picture_caches.push(picture_cache);
+                        break;
+                    }
+                    Ok(Event::Eof) => {
+                        return Err(XlsxError::XmlEof("read file is eof"));
+                    }
+                    _ => {
+
+                    }
+                }
+            }
+
+        }
+
+        Ok(())
+    }
 
     fn read_pictures_sheet(&mut self) -> Result<(), XlsxError> {
 
@@ -649,7 +704,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
         let mut buf = Vec::with_capacity(1024);
 
-        for i in 1..=self.sheets.len() {
+        for i in 1..= self.sheets.len() {
 
             let mut xml = match  xml_reader(&mut self.zip, format!("xl/drawings/drawing{}.xml", i).as_str()) {
                 None => {
@@ -721,7 +776,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 buf.clear();
                 match xml.read_event_into(&mut buf) {
                     Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"twoCellAnchor" => {
-                        println!("come in");
                         drawings.push(PictureCell::default())
                     },
                     Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"from" => {
@@ -731,7 +785,58 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         drawings.last_mut().unwrap().to = parse_dimension(&mut xml, &mut buf)?;
                     },
                     Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"pic" => {
-
+                        loop {
+                            buf.clear();
+                            match xml.read_event_into(&mut buf) {
+                                Ok(Event::End(e)) if e.local_name().as_ref() == b"pic" => {
+                                  break;
+                                },
+                                Ok(Event::Start(e)) if e.local_name().as_ref() == b"blip"=> {
+                                    let attributes = e.attributes();
+                                    for att in attributes {
+                                        if let Ok(att) = att {
+                                            match att.key {
+                                                QName(b"r:embed") => {
+                                                    drawings.last_mut().unwrap().picture.id = String::from_utf8(att.value.to_vec()).unwrap();
+                                                },
+                                                _=>{}
+                                            }
+                                        }
+                                    }
+                                },
+                                Ok(Event::Start(e)) if e.local_name().as_ref() == b"cNvPr" => {
+                                    e.attributes().into_iter().for_each(|p|{
+                                        if let Ok(att) = p {
+                                            match att.key {
+                                                QName(b"name")=>{
+                                                    unsafe {
+                                                        drawings.last_mut().unwrap().picture.name = String::from_utf8_unchecked(att.value.to_vec())
+                                                    }
+                                                },
+                                                _=>{}
+                                            }
+                                        }
+                                    })
+                                },
+                                Ok(Event::Start(e)) if e.local_name().as_ref() == b"xfrm" => {
+                                    e.attributes().into_iter().try_for_each::<_, Result<(), XlsxError>>(|p|{
+                                        if let Ok(att) = p {
+                                            match att.key {
+                                                QName(b"rot")=>{
+                                                    drawings.last_mut().unwrap().picture.rot.0 = get_numerical(att.value.iter().as_slice())?;
+                                                },
+                                                _=>{}
+                                            }
+                                        }
+                                        Ok(())
+                                    })?
+                                }
+                                Ok(Event::Eof) => {
+                                    return Ok(());
+                                },
+                                _=>{}
+                            }
+                        }
                     },
                     Ok(Event::Start(ref e)) => {
                         // println!("{:?}" , String::from_utf8(e.local_name().as_ref().to_vec()));
@@ -745,7 +850,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
             }
         }
 
-        println!("drawings: {:?}", drawings);
+        println!("drawings: {:#?}", drawings);
 
         Ok(())
     }
@@ -1224,6 +1329,27 @@ fn get_row_and_optional_column(range: &[u8]) -> Result<(u32, Option<u32>), XlsxE
         .checked_sub(1)
         .ok_or(XlsxError::RangeWithoutRowComponent)?;
     Ok((row, col.checked_sub(1)))
+}
+
+pub(crate) fn get_numerical(range: &[u8]) -> Result<u32, XlsxError> {
+    let mut num = 0;
+    let mut pow = 1;
+    let mut readrow = true;
+    for c in range.iter().rev() {
+        match *c {
+            c @ b'0'..=b'9' => {
+                if readrow {
+                    num += ((c - b'0') as u32) * pow;
+                    pow *= 10;
+                } else {
+                    return Err(XlsxError::NumericColumn(c));
+                }
+            }
+            _ => return Err(XlsxError::Alphanumeric(*c)),
+        }
+    }
+
+    Ok(num)
 }
 
 /// attempts to read either a simple or richtext string

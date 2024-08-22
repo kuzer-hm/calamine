@@ -645,7 +645,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
     }
     // 图片非常之大的，应该尽量在使用到的时候再加载，而不是一次性加载到内存
 
-    fn read_picture_relations(&mut self) -> Result<Vec<HashMap<String, PicPr>>, XlsxError> {
+    fn read_picture_relations(&mut self) -> Result<Vec<HashMap<String, String>>, XlsxError> {
 
         let mut picture_caches = vec![];
 
@@ -656,32 +656,41 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 Some(x) => x?
             };
 
-            let mut picture_cache = HashMap::<String, PicPr>::new();
+            let mut picture_cache = HashMap::<String, String>::new();
 
             let mut buf = Vec::with_capacity(1024);
 
             loop {
                 match xml.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) if e.local_name().as_ref() == b"Relationship" => {
-                        let mut pp = PicPr::default();
+                        let mut picture_id = None;
+                        let mut target = None;
                         for att in e.attributes().into_iter() {
                             if let Ok(att) = att {
                                 match att.key {
                                     QName(b"Id") => {
-                                        pp.id = String::from_utf8(att.value.to_vec()).unwrap();
+                                        picture_id = Some(
+                                            String::from_utf8(att.value.to_vec())
+                                                .or_else(
+                                                    Err(XlsxError::Parse(ParseError::from("target url is invalid"))))?
+                                        );
                                     },
                                     QName(b"Target") => {
-                                        pp.target = String::from_utf8(att.value.to_vec()).unwrap();
+                                        target = Some(
+                                            String::from_utf8(att.value.to_vec())
+                                                .or_else(
+                                                    Err(XlsxError::Parse(ParseError::from("target url is invalid"))))?
+                                        );
                                     }
                                     _=>{}
                                 }
                             }
                         }
 
-                        if pp.is_valid() {
-                            picture_cache.insert(pp.id, pp.clone());
+                        if picture_id.is_some() &&  target.is_some() {
+                            picture_cache.insert(picture_id.unwrap(), target.unwrap());
                         }
-                    }
+                    },
                     Ok(Event::End(e)) if e.local_name().as_ref()== b"Relationship" => {
                         picture_caches.push(picture_cache);
                         break;

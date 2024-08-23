@@ -194,8 +194,11 @@ pub struct Xlsx<RS> {
     /// Pictures
     #[cfg(feature = "picture")]
     pictures: Option<Vec<(String, Vec<u8>)>>,
+    #[cfg(feature = "picture")]
+    drawings: Option<Vec<PictureCell>>,
     /// Merged Regions: Name, Sheet, Merged Dimensions
     merged_regions: Option<Vec<(String, String, Dimensions)>>,
+
 }
 
 impl<RS: Read + Seek> Xlsx<RS> {
@@ -644,15 +647,15 @@ impl<RS: Read + Seek> Xlsx<RS> {
         Ok(())
     }
     // 图片非常之大的，应该尽量在使用到的时候再加载，而不是一次性加载到内存
-
+    #[cfg(feature = "picture")]
     fn read_picture_relations(&mut self) -> Result<Vec<HashMap<String, String>>, XlsxError> {
 
         let mut picture_caches = vec![];
-
         // read file to store take the picture id and path to storage
         for i in 1..=self.sheets.len() {
-            let mut xml = match xml_reader(&mut self.zip, format!("xl/drawings/_rels/drawing{}.xml", i).as_str()) {
-                None => break,
+
+            let mut xml = match xml_reader(&mut self.zip, format!("xl/drawings/_rels/drawing{}.xml.rels", i).as_str()) {
+                None => continue,
                 Some(x) => x?
             };
 
@@ -663,23 +666,22 @@ impl<RS: Read + Seek> Xlsx<RS> {
             loop {
                 match xml.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) if e.local_name().as_ref() == b"Relationship" => {
-                        let mut picture_id = None;
-                        let mut target = None;
+
+                        let mut pic_id = None;
+                        let mut target_url = None;
+
                         for att in e.attributes().into_iter() {
                             if let Ok(att) = att {
                                 match att.key {
                                     QName(b"Id") => {
-                                        picture_id = Some(
-                                            String::from_utf8(att.value.to_vec())
-                                                .or_else(
-                                                    Err(XlsxError::Parse(ParseError::from("target url is invalid"))))?
+                                        pic_id = Some(
+                                            String::from_utf8(att.value.to_vec()).unwrap()
                                         );
                                     },
                                     QName(b"Target") => {
-                                        target = Some(
-                                            String::from_utf8(att.value.to_vec())
-                                                .or_else(
-                                                    Err(XlsxError::Parse(ParseError::from("target url is invalid"))))?
+                                        target_url = Some(
+                                            format!("xl{}", &String::from_utf8(att.value.to_vec()).unwrap()[2..])
+
                                         );
                                     }
                                     _=>{}
@@ -687,11 +689,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             }
                         }
 
-                        if picture_id.is_some() &&  target.is_some() {
-                            picture_cache.insert(picture_id.unwrap(), target.unwrap());
+                        if pic_id.is_some() && target_url.is_some() {
+                            picture_cache.insert(pic_id.unwrap(), target_url.unwrap());
                         }
-                    },
-                    Ok(Event::End(e)) if e.local_name().as_ref()== b"Relationship" => {
+                    }
+                    Ok(Event::End(e)) if e.local_name().as_ref()== b"Relationships" => {
                         picture_caches.push(picture_cache);
                         break;
                     }
@@ -709,6 +711,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
         Ok(picture_caches)
     }
 
+    #[cfg(feature = "picture")]
     fn read_pictures_sheet(&mut self) -> Result<(), XlsxError> {
 
         let mut drawings: Vec<PictureCell> = vec![];
@@ -720,10 +723,14 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
             let mut xml = match  xml_reader(&mut self.zip, format!("xl/drawings/drawing{}.xml", i).as_str()) {
                 None => {
-                    break;
+                    continue;
                 },
                 Some(x)=>x?
             };
+
+            let target_relation = picture_relations.get(i - 1).ok_or(
+                XlsxError::FileNotFound( format!("drawing{} relation file is not found", i) )
+            )?;
 
             let parse_dimension = | xml:&mut XlReader,  buf:&mut Vec<u8>| ->  Result<(u32,u32,u32,u32), XlsxError> {
                 let mut dimension = (0,0,0,0);
@@ -809,7 +816,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         if let Ok(att) = att {
                                             match att.key {
                                                 QName(b"r:embed") => {
-                                                    drawings.last_mut().unwrap().picture.id = String::from_utf8(att.value.to_vec()).unwrap();
+
+                                                    if let Some(&ref target) = target_relation.get(&String::from_utf8(att.value.to_vec()).unwrap()) {
+                                                        drawings.last_mut().unwrap().picture.target = target.clone();
+                                                    }
+
                                                 },
                                                 _=>{}
                                             }
@@ -863,12 +874,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
             }
         }
 
-
-        for i in 0..drawings.len() {
-            if let Some(relation) = picture_relations.get(i) {
-            }
-        }
-
+        self.drawings = Some(drawings);
 
         Ok(())
     }
@@ -1078,6 +1084,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
         let formats = &self.formats;
         XlsxCellReader::new(xml, strings, formats, is_1904)
     }
+
+
+    /// obtain drawings ,that must run after read_pictures_sheet
+    #[cfg(feature = "picture")]
+    pub fn drawings(&self) -> Option<Vec<PictureCell>> {
+        self.drawings.to_owned()
+    }
 }
 
 impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
@@ -1096,6 +1109,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             metadata: Metadata::default(),
             #[cfg(feature = "picture")]
             pictures: None,
+            #[cfg(feature = "picture")]
+            drawings: None,
             merged_regions: None,
         };
         xlsx.read_shared_strings()?;
